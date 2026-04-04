@@ -8,7 +8,9 @@ Core DocuBot class responsible for:
 """
 
 import os
+import re
 import glob
+from rank_bm25 import BM25Okapi
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -31,8 +33,11 @@ class DocuBot:
 
     def load_documents(self):
         """
-        Loads all .md and .txt files inside docs_folder.
-        Returns a list of tuples: (filename, text)
+        Loads all .md and .txt files inside docs_folder and splits each file
+        into section-level chunks at ## headings.
+        Returns a list of tuples: (chunk_id, text)
+        where chunk_id = "FILENAME#Section Heading" (or just "FILENAME" for
+        the preamble before the first ## heading).
         """
         docs = []
         pattern = os.path.join(self.docs_folder, "*.*")
@@ -41,8 +46,30 @@ class DocuBot:
                 with open(path, "r", encoding="utf8") as f:
                     text = f.read()
                 filename = os.path.basename(path)
-                docs.append((filename, text))
+                docs.extend(self._chunk_by_section(text, filename))
         return docs
+
+    def _chunk_by_section(self, text, filename):
+        """
+        Splits a markdown document into chunks at ## headings (not ###).
+        Each chunk is (chunk_id, section_text) where
+        chunk_id = "FILENAME#Heading" for ## sections,
+        or just "FILENAME" for any preamble before the first ## heading.
+        """
+        # Split just before lines that start with exactly '## '
+        parts = re.split(r'(?=\n## )', text)
+        chunks = []
+        for i, part in enumerate(parts):
+            part = part.strip()
+            if not part:
+                continue
+            heading_match = re.match(r'^## (.+)', part)
+            if heading_match:
+                chunk_id = f"{filename}#{heading_match.group(1).strip()}"
+            else:
+                chunk_id = filename
+            chunks.append((chunk_id, part))
+        return chunks
 
     # -----------------------------------------------------------
     # Index Construction (Phase 1)
@@ -50,22 +77,15 @@ class DocuBot:
 
     def build_index(self, documents):
         """
-        TODO (Phase 1):
-        Build a tiny inverted index mapping lowercase words to the documents
-        they appear in.
-
-        Example structure:
-        {
-            "token": ["AUTH.md", "API_REFERENCE.md"],
-            "database": ["DATABASE.md"]
-        }
-
-        Keep this simple: split on whitespace, lowercase tokens,
-        ignore punctuation if needed.
+        Builds a BM25Okapi index over the loaded documents.
+        Stores tokenized corpus and filenames so score_document and retrieve
+        can look up scores by index position.
         """
-        index = {}
-        # TODO: implement simple indexing
-        return index
+        self._bm25_filenames = [filename for filename, _ in documents]
+        tokenized_corpus = [
+            text.lower().split() for _, text in documents
+        ]
+        return BM25Okapi(tokenized_corpus)
 
     # -----------------------------------------------------------
     # Scoring and Retrieval (Phase 1)
@@ -73,27 +93,34 @@ class DocuBot:
 
     def score_document(self, query, text):
         """
-        TODO (Phase 1):
-        Return a simple relevance score for how well the text matches the query.
-
-        Suggested baseline:
-        - Convert query into lowercase words
-        - Count how many appear in the text
-        - Return the count as the score
+        Returns the BM25 score for a single document against the query.
+        Tokenizes both query and text, then uses get_scores() and picks
+        the score for the matching document position.
         """
-        # TODO: implement scoring
-        return 0
+        tokenized_query = query.lower().split()
+        scores = self.index.get_scores(tokenized_query)
+        tokenized_text = text.lower().split()
+        for i, (_, doc_text) in enumerate(self.documents):
+            if doc_text.lower().split() == tokenized_text:
+                return scores[i]
+        return 0.0
 
     def retrieve(self, query, top_k=3):
         """
-        TODO (Phase 1):
-        Use the index and scoring function to select top_k relevant document snippets.
-
-        Return a list of (filename, text) sorted by score descending.
+        Uses BM25 to score all documents and return the top_k most relevant
+        as a list of (filename, text) sorted by score descending.
         """
+        tokenized_query = query.lower().split()
+        scores = self.index.get_scores(tokenized_query)
+        ranked = sorted(
+            range(len(scores)), key=lambda i: scores[i], reverse=True
+        )
         results = []
-        # TODO: implement retrieval logic
-        return results[:top_k]
+        for i in ranked[:top_k]:
+            if scores[i] > 0:
+                filename, text = self.documents[i]
+                results.append((filename, text))
+        return results
 
     # -----------------------------------------------------------
     # Answering Modes

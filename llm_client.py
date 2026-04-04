@@ -1,8 +1,8 @@
 """
-Gemini client wrapper used by DocuBot.
+Ollama client wrapper used by DocuBot.
 
 Handles:
-- Configuring the Gemini client from the GEMINI_API_KEY environment variable
+- Sending prompts to a locally running Ollama instance
 - Naive "generation only" answers over the full docs corpus (Phase 0)
 - RAG style answers that use only retrieved snippets (Phase 2)
 
@@ -10,19 +10,21 @@ Experiment with:
 - Prompt wording
 - Refusal conditions
 - How strictly the model is instructed to use only the provided context
+- Swapping OLLAMA_MODEL for a different local model (e.g. "phi3:mini")
 """
 
-import os
-import google.generativeai as genai
+import requests
 
 # Central place to update the model name if needed.
-# You can swap this for a different Gemini model in the future.
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+# Run `ollama pull tinyllama` (or another model) before using.
+OLLAMA_BASE_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "tinyllama"
 
 
 class GeminiClient:
     """
-    Simple wrapper around the Gemini model.
+    Ollama-backed client with the same interface as the original GeminiClient,
+    so DocuBot needs no changes.
 
     Usage:
         client = GeminiClient()
@@ -32,28 +34,27 @@ class GeminiClient:
     """
 
     def __init__(self):
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "Missing GEMINI_API_KEY environment variable. "
-                "Set it in your shell or .env file to enable LLM features."
-            )
+        pass  # No API key needed for local Ollama
 
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+    def _generate(self, prompt):
+        payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}
+        response = requests.post(OLLAMA_BASE_URL, json=payload, timeout=120)
+        response.raise_for_status()
+        return response.json().get("response", "").strip()
 
     # -----------------------------------------------------------
     # Phase 0: naive generation over full docs
     # -----------------------------------------------------------
 
     def naive_answer_over_full_docs(self, query, all_text):
-        # We ignore all_text and send a generic prompt instead
-        prompt = f"""
-    You are a documentation assistant. 
-    Answer this developer question: {query}
-    """
-        response = self.model.generate_content(prompt)
-        return (response.text or "").strip()
+        prompt = f"""You are a documentation assistant. Use the documentation below to answer the developer question.
+
+Documentation:
+{all_text}
+
+Developer question: {query}
+"""
+        return self._generate(prompt)
 
     # -----------------------------------------------------------
     # Phase 2: RAG style generation over retrieved snippets
@@ -107,5 +108,4 @@ Rules:
 - When you do answer, briefly mention which files you relied on.
 """
 
-        response = self.model.generate_content(prompt)
-        return (response.text or "").strip()
+        return self._generate(prompt)
