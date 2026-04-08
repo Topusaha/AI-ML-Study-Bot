@@ -1,155 +1,207 @@
 """
-CLI runner for the DocuBot tinker activity.
+CLI entry point for the ML Study Bot.
 
-Supports three modes:
-1. Naive LLM generation over all docs (Phase 0)
-2. Retrieval only (Phase 1)
-3. RAG: retrieval plus LLM generation (Phase 2)
+Modes:
+  1) RAG Q&A   — hybrid retrieval + Ollama LLM answer
+  2) Quiz Me   — Ollama generates a question; student answers; Ollama grades
+  3) Evaluation — HITL loop: retrieve → display → human rates → log + report
+
+Usage:
+  python main.py
+
+Requires Ollama to be running:
+  ollama serve
+  ollama pull llama3.2
+  ollama pull nomic-embed-text   # optional, Phase 2 upgrade
 """
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from docubot import DocuBot
-from llm_client import GeminiClient
-from dataset import SAMPLE_QUERIES
+import sys
+
+from backend.studybot import StudyBot
+from backend.evaluation import HITLEvaluator, print_metrics_report
+from backend.dataset import SAMPLE_QUERIES
+from ml.llm_client import OllamaClient
+from ml.guardrails import InsufficientContextError
 
 
-def try_create_llm_client():
-    """
-    Tries to create a GeminiClient.
-    Returns (llm_client, has_llm: bool).
-    """
-    try:
-        client = GeminiClient()
-        return client, True
-    except RuntimeError as exc:
-        print("Warning: LLM features are disabled.")
-        print(f"Reason: {exc}")
-        print("You can still run retrieval only mode.\n")
-        return None, False
+def _print_topic_list() -> None:
+    print("Topics I have notes on:")
+    for t in StudyBot.AVAILABLE_TOPICS:
+        print(f"  - {t}")
 
 
-def choose_mode(has_llm):
-    """
-    Asks the user which mode to run.
-    Returns "1", "2", "3", or "q".
-    """
-    print("Choose a mode:")
-    if has_llm:
-        print("  1) Naive LLM over full docs (no retrieval)")
-    else:
-        print("  1) Naive LLM over full docs (unavailable, no GEMINI_API_KEY)")
-    print("  2) Retrieval only (no LLM)")
-    if has_llm:
-        print("  3) RAG (retrieval + LLM)")
-    else:
-        print("  3) RAG (unavailable, no GEMINI_API_KEY)")
-    print("  q) Quit")
+# ---------------------------------------------------------------------------
+# Mode 1: RAG Q&A
+# ---------------------------------------------------------------------------
 
-    choice = input("Enter choice: ").strip().lower()
-    return choice
-
-
-def get_query_or_use_samples():
-    """
-    Ask the user if they want to run all sample queries or a single custom query.
-
-    Returns:
-        queries: list of strings
-        label: short description of the source of queries
-    """
-    print("\nPress Enter to run built in sample queries.")
-    custom = input("Or type a single custom query: ").strip()
-
-    if custom:
-        return [custom], "custom query"
-    else:
-        return SAMPLE_QUERIES, "sample queries"
-
-
-def run_naive_llm_mode(bot, has_llm):
-    """
-    Mode 1:
-    Naive LLM generation over the full docs corpus.
-    """
-    if not has_llm or bot.llm_client is None:
-        print("\nNaive LLM mode is not available (no GEMINI_API_KEY).\n")
-        return
-
-    queries, label = get_query_or_use_samples()
-    print(f"\nRunning naive LLM mode on {label}...\n")
-
-    all_text = bot.full_corpus_text()
-
-    for query in queries:
-        print("=" * 60)
-        print(f"Question: {query}\n")
-        answer = bot.llm_client.naive_answer_over_full_docs(query, all_text)
-        print("Answer:")
-        print(answer)
-        print()
-
-
-def run_retrieval_only_mode(bot):
-    """
-    Mode 2:
-    Retrieval only answers. No LLM involved.
-    """
-    queries, label = get_query_or_use_samples()
-    print(f"\nRunning retrieval only mode on {label}...\n")
-
-    for query in queries:
-        print("=" * 60)
-        print(f"Question: {query}\n")
-        answer = bot.answer_retrieval_only(query)
-        print("Retrieved snippets:")
-        print(answer)
-        print()
-
-
-def run_rag_mode(bot, has_llm):
-    """
-    Mode 3:
-    Retrieval plus LLM generation.
-    """
-    if not has_llm or bot.llm_client is None:
-        print("\nRAG mode is not available (no GEMINI_API_KEY).\n")
-        return
-
-    queries, label = get_query_or_use_samples()
-    print(f"\nRunning RAG mode on {label}...\n")
-
-    for query in queries:
-        print("=" * 60)
-        print(f"Question: {query}\n")
-        answer = bot.answer_rag(query)
-        print("Answer:")
-        print(answer)
-        print()
-
-
-def main():
-    print("DocuBot Tinker Activity")
-    print("=======================\n")
-
-    llm_client, has_llm = try_create_llm_client()
-    bot = DocuBot(llm_client=llm_client)
+def run_rag_mode(bot: StudyBot, ollama: OllamaClient) -> None:
+    print("\n--- RAG Q&A Mode ---")
+    print("Type your question (or 'back' to return to menu).\n")
 
     while True:
-        choice = choose_mode(has_llm)
+        query = input("Question: ").strip()
+        if query.lower() in ("back", "q", ""):
+            break
+
+        try:
+            result = bot.retrieve(query, k=5, mode="rag")
+            answer = ollama.answer_from_snippets(query, result.pairs)
+            bot.logger.log_llm_response(query=query, response=answer, mode="rag")
+            print(f"\nAnswer:\n{answer}")
+            print(f"\nSources: {', '.join(p.page_title for p in result.pairs)}\n")
+        except InsufficientContextError as e:
+            print(f"\n{e}\n")
+            _print_topic_list()
+            print()
+        except Exception as exc:
+            if "connection" in str(exc).lower() or "refused" in str(exc).lower():
+                print("\nOllama is not running. Start it with: ollama serve\n")
+            else:
+                print(f"\nError: {exc}\n")
+
+
+# ---------------------------------------------------------------------------
+# Mode 2: Quiz Me
+# ---------------------------------------------------------------------------
+
+def run_quiz_mode(bot: StudyBot, ollama: OllamaClient) -> None:
+    print("\n--- Quiz Me Mode ---")
+    print("Optionally enter a topic to focus on (or press Enter for any topic).")
+    topic = input("Topic: ").strip() or None
+
+    while True:
+        try:
+            query = topic or "general ML concepts"
+            result = bot.retrieve(query, k=8, page_title_filter=topic, mode="quiz")
+            question = ollama.quiz_from_snippets(result.pairs)
+        except InsufficientContextError:
+            print("No notes found for that topic.")
+            _print_topic_list()
+            break
+        except Exception as exc:
+            print(f"Could not generate question: {exc}")
+            break
+
+        print(f"\nQuestion: {question}")
+        student_answer = input("Your answer: ").strip()
+
+        if not student_answer:
+            print("Skipping grade (no answer provided).")
+        else:
+            try:
+                feedback = ollama.grade_student_answer(question, student_answer, result.pairs)
+                print(f"\nFeedback:\n{feedback}\n")
+                grade = feedback.split("\n")[0].strip().lower()
+                bot.logger.log_quiz_grade(
+                    question=question,
+                    student_answer=student_answer,
+                    grade=grade,
+                    feedback=feedback,
+                    mode="quiz",
+                    page_title=result.pairs[0].page_title if result.pairs else "",
+                )
+            except Exception as exc:
+                print(f"Grading error: {exc}")
+
+        again = input("Another question? (y/n): ").strip().lower()
+        if again != "y":
+            break
+
+
+# ---------------------------------------------------------------------------
+# Mode 3: Evaluation (HITL)
+# ---------------------------------------------------------------------------
+
+def run_evaluation_mode(bot: StudyBot) -> None:
+    print("\n--- Evaluation Mode ---")
+    print("Using sample queries. Answer y / n / partial for each retrieval.\n")
+
+    evaluator = HITLEvaluator(
+        csv_path="data/human-in-the-loop-results.csv",
+        logger=bot.logger,
+    )
+
+    queries_input = input(
+        "Press Enter to use built-in sample queries, or type a single query: "
+    ).strip()
+    queries = [queries_input] if queries_input else SAMPLE_QUERIES
+
+    for query in queries:
+        print(f"\nQuery: {query}")
+        try:
+            result = bot.retrieve(query, k=3, mode="hitl")
+        except InsufficientContextError:
+            print("  → No relevant notes found. Skipping.\n")
+            continue
+
+        for i, pair in enumerate(result.pairs, start=1):
+            print(f"  [{i}] ({pair.page_title}) Q: {pair.question}")
+
+        rating = input("Relevant? (y / n / partial): ").strip().lower()
+        if rating not in ("y", "n", "partial"):
+            rating = "n"
+
+        for pair in result.pairs:
+            bot.logger.log_hitl_rating(
+                query=query,
+                qa_pair_id=pair.id,
+                human_rating=rating,
+                mode="hitl",
+            )
+
+    print("\n--- Session Report ---")
+    print_metrics_report(str(bot.logger.current_log_path))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    print("ML Study Bot")
+    print("============\n")
+
+    bot = StudyBot()
+    print("Loading and indexing notes...")
+    bot.load_and_index()
+    print()
+
+    try:
+        ollama = OllamaClient()
+        has_llm = True
+    except Exception as exc:
+        print(f"Warning: Ollama unavailable — LLM modes disabled. ({exc})\n")
+        ollama = None
+        has_llm = False
+
+    while True:
+        print("Choose a mode:")
+        print("  1) RAG Q&A")
+        print("  2) Quiz Me")
+        print("  3) Evaluation (HITL)")
+        print("  q) Quit")
+        choice = input("Choice: ").strip().lower()
 
         if choice == "q":
             print("\nGoodbye.")
             break
         elif choice == "1":
-            run_naive_llm_mode(bot, has_llm)
+            if not has_llm:
+                print("LLM unavailable. Run: ollama serve && ollama pull llama3.2\n")
+            else:
+                run_rag_mode(bot, ollama)
         elif choice == "2":
-            run_retrieval_only_mode(bot)
+            if not has_llm:
+                print("LLM unavailable. Run: ollama serve && ollama pull llama3.2\n")
+            else:
+                run_quiz_mode(bot, ollama)
         elif choice == "3":
-            run_rag_mode(bot, has_llm)
+            run_evaluation_mode(bot)
         else:
-            print("\nUnknown choice. Please pick 1, 2, 3, or q.\n")
+            print("Unknown choice.\n")
 
 
 if __name__ == "__main__":

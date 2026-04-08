@@ -6,11 +6,10 @@ __pycache__/
 
 # Virtual environments
 venv/
-.env/
+.venv/
 .env.bak/
 
-# Environment variables
-*.env
+# Environment variables (keep .env.example committed)
 .env
 
 # macOS artifacts
@@ -23,5 +22,15 @@ venv/
 # VS Code
 .vscode/
 
-# Logs
-*.log
+# Pytest
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Generated data artifacts (all gitignored except data/assets/notion/)
+data/logs/
+data/.chroma/
+data/human-in-the-loop-results.csv
+
+# Legacy vector store (old location)
+.chroma/
