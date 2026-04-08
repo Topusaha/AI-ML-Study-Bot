@@ -4,10 +4,29 @@ Quiz Me tab — generate a grounded quiz question, accept a student answer, grad
 
 from __future__ import annotations
 
+import random
+import re
+
 import streamlit as st
 
 from backend.studybot import StudyBot
 from ml.guardrails import InsufficientContextError
+
+def _question_only(text: str) -> str:
+    """Strip any answer portion from quiz question text before displaying."""
+    # Handle "Q: question text A: answer text" (inline or multiline)
+    match = re.search(r'Q:\s*(.+?)(?=\s+A:|$)', text, re.DOTALL)
+    if match:
+        return "Q: " + match.group(1).strip()
+    # Fallback: drop any line that starts with A:
+    lines = text.split('\n')
+    filtered = []
+    for line in lines:
+        if re.match(r'\s*A:', line):
+            break
+        filtered.append(line)
+    return '\n'.join(filtered).strip() or text
+
 
 _SECTION_MAP = {
     "All": None,
@@ -35,7 +54,7 @@ def render() -> None:
 
         try:
             with st.spinner("Generating question..."):
-                query = topic_filter or "general ML concepts"
+                query = topic_filter or random.choice(StudyBot.AVAILABLE_TOPICS)
                 result = bot.retrieve(
                     query,
                     k=8,
@@ -56,7 +75,7 @@ def render() -> None:
 
     # Show question + answer form if a question has been generated
     if st.session_state.current_quiz_question:
-        st.info(st.session_state.current_quiz_question)
+        st.info(_question_only(st.session_state.current_quiz_question))
         student_answer = st.text_area("Your Answer", key="quiz_answer_input")
 
         col1, col2 = st.columns([1, 4])
@@ -97,7 +116,16 @@ def render() -> None:
                     st.error("Incorrect")
                     grade = "incorrect"
 
-                st.markdown(feedback_text)
+                # Render the reference answer and reasoning as distinct sections
+                body = "\n".join(feedback_text.split("\n")[1:]).strip()
+                ref_match = re.search(r'Reference Answer:\s*(.+?)(?=\n\s*Reasoning:|$)', body, re.DOTALL)
+                reasoning_match = re.search(r'Reasoning:\s*(.+)', body, re.DOTALL)
+                if ref_match:
+                    st.markdown(f"**Reference Answer:** {ref_match.group(1).strip()}")
+                if reasoning_match:
+                    st.markdown(f"**Reasoning:** {reasoning_match.group(1).strip()}")
+                if not ref_match and not reasoning_match:
+                    st.markdown(body)
 
                 logger.log_quiz_grade(
                     question=question,

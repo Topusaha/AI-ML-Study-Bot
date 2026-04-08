@@ -135,10 +135,13 @@ class OllamaClient:
                 "content": (
                     _GROUNDING_INSTRUCTION
                     + "\nYou are grading a student's answer. "
-                    "Your response must begin with exactly one of: "
-                    "Correct, Partial, or Incorrect. "
-                    "Then provide 2–3 sentences of feedback grounded strictly "
-                    "in the study notes provided."
+                    "Your response MUST follow this exact format:\n"
+                    "Line 1: exactly one of: Correct, Partial, or Incorrect\n"
+                    "Line 2: blank\n"
+                    "Reference Answer: [the correct answer drawn from the study notes]\n"
+                    "Line 4: blank\n"
+                    "Reasoning: [2-3 sentences explaining why the student's answer is "
+                    "correct, partially correct, or incorrect, grounded strictly in the study notes]"
                 ),
             },
             {
