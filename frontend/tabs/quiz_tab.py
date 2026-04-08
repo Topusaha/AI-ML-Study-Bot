@@ -48,7 +48,14 @@ def render() -> None:
     topic_filter = None if topic_choice == "All Topics" else topic_choice
     section_filter = _SECTION_MAP[section_choice]
 
-    if st.button("Generate Question", key="quiz_generate"):
+    # "Next Question" sets a flag on the previous run; consume it here before rendering buttons
+    generate_next = st.session_state.get("quiz_generate_next", False)
+    if generate_next:
+        st.session_state.quiz_generate_next = False
+
+    should_generate = st.button("Generate Question", key="quiz_generate") or generate_next
+
+    if should_generate:
         bot: StudyBot = st.session_state.studybot
         ollama = st.session_state.ollama_client
 
@@ -87,6 +94,7 @@ def render() -> None:
         if next_question:
             st.session_state.current_quiz_question = ""
             st.session_state.current_quiz_snippets = []
+            st.session_state.quiz_generate_next = True
             st.rerun()
 
         if submit_answer:
