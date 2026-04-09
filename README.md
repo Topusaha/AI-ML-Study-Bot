@@ -1,18 +1,31 @@
-# DocuBot
+# AI/ML Study Bot
 
-DocuBot is a small documentation assistant that helps answer developer questions about a codebase.  
-It can operate in three different modes:
+An AI-powered study assistant that helps you learn machine learning concepts from your own notes. It uses hybrid retrieval (BM25 + ChromaDB dense embeddings) with a local Ollama LLM to answer questions, generate quizzes, and evaluate retrieval quality.
 
-1. **Naive LLM mode**  
-   Sends the entire documentation corpus to a Gemini model and asks it to answer the question.
+---
 
-2. **Retrieval only mode**  
-   Uses a simple indexing and scoring system to retrieve relevant snippets without calling an LLM.
+## Features
 
-3. **RAG mode (Retrieval Augmented Generation)**  
-   Retrieves relevant snippets, then asks Gemini to answer using only those snippets.
+- **RAG Q&A** — Ask free-form questions about ML topics; the bot retrieves relevant note snippets and generates a grounded answer with source citations.
+- **Quiz Me** — The bot generates a question from your notes, you answer, and it grades you with detailed feedback.
+- **HITL Evaluation** — Human-in-the-loop loop: retrieve snippets for sample queries, rate relevance, and view a session metrics report.
+- **Streamlit UI** — Web interface for all three modes with session metrics.
+- **Guardrails** — Refuses to answer when retrieval confidence is too low (BM25 score + cosine distance thresholds).
 
-The docs folder contains realistic developer documents (API reference, authentication notes, database notes), but these files are **just text**. They support retrieval experiments and do not require students to set up any backend systems.
+---
+
+## Topics
+
+Notes are sourced from *Hands On Machine Learning* (Notion export) and cover:
+
+- Decision Trees
+- Training Models
+- Support Vector Machines
+- Ensemble Learning and Random Forests
+- Dimensionality Reduction
+- Unsupervised Learning Techniques
+- Introduction to Artificial Neural Networks
+- Training Deep Neural Networks
 
 ---
 
@@ -22,61 +35,90 @@ The docs folder contains realistic developer documents (API reference, authentic
 
     pip install -r requirements.txt
 
-### 2. Configure environment variables
+### 2. Start Ollama and pull models
 
-Copy the example file:
+    ollama serve
+    ollama pull llama3.2
+    ollama pull nomic-embed-text   # optional, for upgraded embeddings
+
+### 3. (Optional) Configure environment variables
 
     cp .env.example .env
 
-Then edit `.env` to include your Gemini API key:
-
-    GEMINI_API_KEY=your_api_key_here
-
-If you do not set a Gemini key, you can still run retrieval only mode.
+Edit `.env` if you need to override any defaults.
 
 ---
 
-## Running DocuBot
+## Running
 
-Start the program:
+### CLI
 
     python main.py
 
-Choose a mode:
+Choose a mode at the prompt:
 
-- **1**: Naive LLM (Gemini reads the full docs)  
-- **2**: Retrieval only (no LLM)  
-- **3**: RAG (retrieval + Gemini)
+- **1** — RAG Q&A
+- **2** — Quiz Me
+- **3** — Evaluation (HITL)
+- **q** — Quit
 
-You can use built in sample queries or type your own.
+### Streamlit UI
 
----
-
-## Running Retrieval Evaluation (optional)
-
-    python evaluation.py
-
-This prints simple retrieval hit rates for sample queries.
+    streamlit run main.py
 
 ---
 
-## Modifying the Project
+## Project Structure
 
-You will primarily work in:
+```
+backend/
+  studybot.py      # Orchestrates ingestion, indexing, retrieval, and logging
+  evaluation.py    # HITL evaluator and metrics reporting
+  dataset.py       # Sample queries for evaluation mode
+  logger.py        # Session logging (retrieval, quiz grades, HITL ratings, refusals)
 
-- `docubot.py`  
-  Implement or improve the retrieval index, scoring, and snippet selection.
+ml/
+  retriever.py     # HybridRetriever: ChromaDB dense + BM25 sparse via RRF fusion
+  models.py        # Data models: QAPair, RetrievalResult
+  parser.py        # Parses Notion markdown exports into Q&A pairs
+  guardrails.py    # Thresholds and InsufficientContextError
+  llm_client.py    # OllamaClient: answer, quiz generation, and grading prompts
 
-- `llm_client.py`  
-  Adjust the prompts and behavior of LLM responses.
+frontend/
+  tabs/
+    qa_tab.py      # RAG Q&A Streamlit tab
+    hitl_tab.py    # HITL evaluation Streamlit tab
+    metrics_tab.py # Session metrics Streamlit tab
 
-- `dataset.py`  
-  Add or change sample queries for testing.
+data/
+  assets/notion/   # Notion markdown exports (source notes)
+  .chroma/         # Persisted ChromaDB vector store
+  logs/            # Session log files (JSONL)
+
+tests/             # pytest test suite
+main.py            # CLI and Streamlit entry point
+```
+
+---
+
+## How It Works
+
+1. **Ingestion** — `MarkdownParser` parses Notion exports into `QAPair` objects (question + answer + metadata).
+2. **Indexing** — `HybridRetriever` upserts pairs into a persistent ChromaDB collection and builds an in-memory BM25 index.
+3. **Retrieval** — On a query, both ChromaDB (cosine similarity) and BM25 (keyword) retrieve candidates; scores are fused via Reciprocal Rank Fusion (RRF).
+4. **Guardrail** — If top BM25 score and cosine distance both fall below thresholds, an `InsufficientContextError` is raised and the bot refuses to answer.
+5. **Generation** — Retrieved snippets are passed to `OllamaClient`, which calls a local `llama3.2` model to generate an answer, quiz question, or grade.
+
+---
+
+## Running Tests
+
+    pytest
 
 ---
 
 ## Requirements
 
 - Python 3.9+
-- A Gemini API key for LLM features (only needed for modes 1 and 3)
-- No database, no server setup, no external services besides LLM calls
+- [Ollama](https://ollama.com) running locally with `llama3.2` pulled
+- No external database or cloud services required
